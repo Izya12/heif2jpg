@@ -13,8 +13,8 @@ import android.provider.MediaStore
 import android.util.Log
 import android.view.View
 import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import com.example.heifconverter.BuildConfig
@@ -31,9 +31,11 @@ import java.io.IOException
 class MainActivity : AppCompatActivity() {
 
     private val bSelect: Button by lazy { findViewById(R.id.select_img_button) }
-    private val progressContainer: LinearLayout by lazy { findViewById(R.id.progress_container) }
+    private val qualityLabel: TextView by lazy { findViewById(R.id.quality_label) }
+    private val qualitySeekBar: SeekBar by lazy { findViewById(R.id.quality_seekbar) }
     private val progressBar: ProgressBar by lazy { findViewById(R.id.progress_bar) }
     private val progressText: TextView by lazy { findViewById(R.id.progress_text) }
+    private val resultText: TextView by lazy { findViewById(R.id.result_text) }
 
     private val pickMedia = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES)
@@ -51,6 +53,14 @@ class MainActivity : AppCompatActivity() {
         bSelect.setOnClickListener {
             pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         }
+
+        qualitySeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                qualityLabel.text = "JPEG Quality: $progress%"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
 
         when (intent?.action) {
             Intent.ACTION_SEND -> {
@@ -96,7 +106,7 @@ class MainActivity : AppCompatActivity() {
 
         if (images.isEmpty()) return
 
-        progressContainer.visibility = View.VISIBLE
+        resultText.visibility = View.GONE
         progressBar.max = images.size
         progressBar.progress = 0
         progressText.text = "Converting 0 / ${images.size}..."
@@ -109,7 +119,7 @@ class MainActivity : AppCompatActivity() {
                 progressText.text = "Converting ${index + 1} / ${images.size}..."
                 try {
                     withContext(Dispatchers.IO) {
-                        convert(uri)
+                        convert(uri, qualitySeekBar.progress)
                     }
                     successCount++
                 } catch (e: Exception) {
@@ -122,22 +132,22 @@ class MainActivity : AppCompatActivity() {
                 yield()
             }
 
-            progressContainer.visibility = View.GONE
-
+            progressText.text = "Ready"
             val message = buildString {
                 append("Done: $successCount converted")
                 if (errorCount > 0) append(", $errorCount failed")
             }
-            Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+            resultText.text = message
+            resultText.visibility = View.VISIBLE
         }
     }
 
-    private fun convert(uri: Uri): String {
+    private fun convert(uri: Uri, quality: Int): String {
         val source = ImageDecoder.createSource(contentResolver, uri)
         val bitmap = ImageDecoder.decodeBitmap(source)
         val displayName = sanitizeDisplayName(uri.lastPathSegment) ?: "converted.jpeg"
         try {
-            saveBitmap(this, bitmap, Bitmap.CompressFormat.JPEG, "image/jpeg", displayName)
+            saveBitmap(this, bitmap, Bitmap.CompressFormat.JPEG, "image/jpeg", displayName, quality)
         } finally {
             bitmap.recycle()
         }
@@ -150,7 +160,8 @@ class MainActivity : AppCompatActivity() {
         bitmap: Bitmap,
         format: Bitmap.CompressFormat,
         mimeType: String,
-        displayName: String
+        displayName: String,
+        quality: Int
     ): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
@@ -166,7 +177,7 @@ class MainActivity : AppCompatActivity() {
                     uri = it
 
                     openOutputStream(it)?.use { stream ->
-                        if (!bitmap.compress(format, 95, stream)) {
+                        if (!bitmap.compress(format, quality, stream)) {
                             throw IOException("Failed to save bitmap.")
                         }
                     } ?: throw IOException("Failed to open output stream.")
