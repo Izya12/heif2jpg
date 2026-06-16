@@ -11,10 +11,19 @@ android {
         applicationId = "info.daydreaming.heif2jpg"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "3.0"
+        versionCode = 5
+        versionName = "3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("release-key.jks")
+            storePassword = "heif2jpg123"
+            keyAlias = "heif2jpg"
+            keyPassword = "heif2jpg123"
+        }
     }
 
     buildFeatures {
@@ -25,6 +34,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
