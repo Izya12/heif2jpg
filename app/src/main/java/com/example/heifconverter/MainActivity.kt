@@ -11,7 +11,11 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
+import android.view.View
 import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import com.example.heifconverter.BuildConfig
 import androidx.activity.result.PickVisualMediaRequest
@@ -21,18 +25,22 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
 
     private val bSelect: Button by lazy { findViewById(R.id.select_img_button) }
+    private val progressContainer: LinearLayout by lazy { findViewById(R.id.progress_container) }
+    private val progressBar: ProgressBar by lazy { findViewById(R.id.progress_bar) }
+    private val progressText: TextView by lazy { findViewById(R.id.progress_text) }
 
     private val pickMedia = registerForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES)
     ) { uris ->
         if (uris.isNotEmpty()) {
             Toast.makeText(this, "Selected ${uris.size} images", Toast.LENGTH_SHORT).show()
-            uris.forEach { uri -> convertAndSave(uri) }
+            convertAll(uris)
         }
     }
 
@@ -47,12 +55,12 @@ class MainActivity : AppCompatActivity() {
         when (intent?.action) {
             Intent.ACTION_SEND -> {
                 val uri = getUriFromIntent(intent)
-                uri?.let { convertAndSave(it) }
+                uri?.let { convertAll(listOf(it)) }
             }
             Intent.ACTION_SEND_MULTIPLE -> {
                 getUriListFromIntent(intent)
                     ?.take(MAX_IMAGES)
-                    ?.forEach { uri -> convertAndSave(uri) }
+                    ?.let { convertAll(it) }
             }
         }
     }
@@ -75,35 +83,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun convertAndSave(uri: Uri) {
-        val mimeType = contentResolver.getType(uri)
-        if (mimeType == null || !mimeType.startsWith("image/")) {
-            Log.d(TAG, "Skipping non-image URI: $uri (type=$mimeType)")
-            return
+    private fun convertAll(uris: List<Uri>) {
+        val images = uris.filter { uri ->
+            val mimeType = contentResolver.getType(uri)
+            if (mimeType == null || !mimeType.startsWith("image/")) {
+                Log.d(TAG, "Skipping non-image URI: $uri (type=$mimeType)")
+                false
+            } else {
+                true
+            }
         }
 
+        if (images.isEmpty()) return
+
+        progressContainer.visibility = View.VISIBLE
+        progressBar.max = images.size
+        progressBar.progress = 0
+        progressText.text = "Converting 0 / ${images.size}..."
+
         lifecycleScope.launch {
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    convert(uri)
+            var successCount = 0
+            var errorCount = 0
+
+            for ((index, uri) in images.withIndex()) {
+                progressText.text = "Converting ${index + 1} / ${images.size}..."
+                try {
+                    withContext(Dispatchers.IO) {
+                        convert(uri)
+                    }
+                    successCount++
+                } catch (e: Exception) {
+                    errorCount++
+                    if (BuildConfig.DEBUG) {
+                        Log.d(TAG, "Conversion failed: $e")
+                    }
                 }
-                Toast.makeText(this@MainActivity, "Saved to $result", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                if (BuildConfig.DEBUG) {
-                    Log.d(TAG, "Conversion failed: $e")
-                }
-                Toast.makeText(this@MainActivity, "Error: $e", Toast.LENGTH_SHORT).show()
+                progressBar.progress = index + 1
+                yield()
             }
+
+            progressContainer.visibility = View.GONE
+
+            val message = buildString {
+                append("Done: $successCount converted")
+                if (errorCount > 0) append(", $errorCount failed")
+            }
+            Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun convert(uri: Uri): String {
         val source = ImageDecoder.createSource(contentResolver, uri)
         val bitmap = ImageDecoder.decodeBitmap(source)
-
         val displayName = sanitizeDisplayName(uri.lastPathSegment) ?: "converted.jpeg"
-        saveBitmap(this, bitmap, Bitmap.CompressFormat.JPEG, "image/jpeg", displayName)
-
+        try {
+            saveBitmap(this, bitmap, Bitmap.CompressFormat.JPEG, "image/jpeg", displayName)
+        } finally {
+            bitmap.recycle()
+        }
         return displayName
     }
 
@@ -129,7 +166,7 @@ class MainActivity : AppCompatActivity() {
                     uri = it
 
                     openOutputStream(it)?.use { stream ->
-                        if (!bitmap.compress(format, 100, stream)) {
+                        if (!bitmap.compress(format, 95, stream)) {
                             throw IOException("Failed to save bitmap.")
                         }
                     } ?: throw IOException("Failed to open output stream.")
@@ -145,8 +182,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun sanitizeDisplayName(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
-        val sanitized = raw.replace(Regex("[^a-zA-Z0-9.\\-_]"), "_")
-        return sanitized.ifBlank { null }?.let { "$it.jpeg" }
+        val name = raw.replace(Regex("[^a-zA-Z0-9.\\-_]"), "_")
+        if (name.isBlank()) return null
+        val baseName = name.substringBeforeLast('.', name)
+        val timestamp = System.currentTimeMillis()
+        return "${baseName}_${timestamp}.jpeg"
     }
 
     companion object {
